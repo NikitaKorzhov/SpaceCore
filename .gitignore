@@ -1,0 +1,29 @@
+## .NET build artifacts
+bin/
+obj/
+
+## Rider / JetBrains IDE
+.idea/
+
+## Visual Studio
+.vs/
+*.user
+*.suo
+
+## VS Code
+.vscode/
+
+## SQLite database files
+*.db
+*.db-shm
+*.db-wal
+
+## Claude Code local settings
+.claude/settings.local.json
+
+## Technical assignment (Ukrainian source document, not part of the codebase)
+BackendTZ.pdf
+
+## OS files
+.DS_Store
+Thumbs.db
