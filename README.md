@@ -58,16 +58,29 @@ Progress against the technical assignment, split into delivery phases.
 - `DELETE /api/Halls/{id}` — soft-delete a hall and its services
 - Soft-delete implemented for both halls and services
 
-### ⏳ Phase 2 — Booking & Pricing Engine (not started)
-- `Booking` entity and CQRS command to book a hall (hall id, date/time, duration, selected services)
-- Time-based pricing engine implementing the rules from the assignment:
-  - Standard hours (09:00–18:00): base price
-  - Evening hours (18:00–23:00): 20% discount
-  - Morning hours (06:00–09:00): 10% discount
-  - Peak hours (12:00–14:00): 15% surcharge
-  - Needs a defined strategy for bookings that span multiple pricing bands (e.g. 11:00–15:00
-    crosses standard and peak hours)
-- Booking confirmation response including the calculated total cost
+### 🟡 Phase 2 — Booking & Pricing Engine (partially done)
+- ✅ `CalculatePriceService` implementing time-of-day pricing rules:
+  - Rules (time range + multiplier) are loaded from `appsettings.json` (`PricingRules`), not
+    hardcoded — currently configured for the assignment's bands (06:00–09:00 ×0.90,
+    12:00–14:00 ×1.15, 18:00–23:00 ×0.80, everything else ×1.0)
+  - Bookings spanning multiple pricing bands (e.g. 11:00–15:00) are prorated hour-by-hour
+    rather than priced at a single rate
+  - Registered in DI (`Program.cs`) via a factory that binds `PricingRuleConfig` from config
+  - Each segment is bounded by the nearest of `+1 hour`, the next pricing-band start/end, or the
+    booking's end — so bookings that don't start exactly on the hour (e.g. `11:30–13:30`) are
+    still prorated correctly across a band boundary (verified: `11:30–13:30` at base rate 100
+    with the 12:00–14:00 ×1.15 band → 50 + 172.5 = 222.5)
+  - **Known limitation:** a pricing rule that wraps past midnight (e.g. `23:00–02:00`) would
+    never match, since the comparison assumes `StartTime < EndTime`. Not an issue with the
+    current `PricingRules` config, but would need explicit handling if such a rule is added.
+  - A temporary `GET /api/Test/price?time=10:00-14:00&price=100` endpoint
+    (`Controllers/TestController.cs`) was added to manually exercise the service end-to-end
+    during development — it is not part of the intended public API and should be removed (or
+    folded into the real booking flow) once Phase 2 is complete. It assumes both start and end
+    fall on the same calendar day, so it can't represent overnight bookings.
+- ⏳ `Booking` entity and CQRS command to book a hall (hall id, date/time, duration, selected
+  services) — not started
+- ⏳ Booking confirmation response including the calculated total cost — not started
 - Prerequisite for Phase 3, since availability search needs the `Booking` entity to check
   existing reservations against
 
@@ -145,3 +158,5 @@ In the Development environment, the raw OpenAPI document is available at `/opena
   is not pre-populated in the database — halls must be created via the API.
 - `SpaceCore.http` still contains the default project template request and has not been
   updated to reflect the real `Halls` endpoints.
+- `GET /api/Test/price` is a throwaway manual-testing endpoint for the pricing service, not a
+  finished part of the API surface, and can't represent overnight bookings (see Phase 2 above).

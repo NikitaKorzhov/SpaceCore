@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using SpaceCore.Data;
+using SpaceCore.Services.Domain;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -10,6 +11,16 @@ builder.Services.AddOpenApi();
 builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(Program).Assembly));
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection")));
+// Реєстрація правил ціноутворення та самого сервісу
+builder.Services.AddTransient<ICalculatePriceService>(provider =>
+{
+    var configuration = provider.GetRequiredService<IConfiguration>();
+    
+    // Тепер конфігурація без проблем заповнить список об'єктів
+    var rawRules = configuration.GetSection("PricingRules").Get<List<PricingRuleConfig>>() ?? new();
+
+    return new CalculatePriceService(rawRules);
+});
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
