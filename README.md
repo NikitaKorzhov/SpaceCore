@@ -101,10 +101,27 @@ Progress against the technical assignment, split into delivery phases.
   - Prerequisite for Phase 3, since availability search needs the `Booking` entity to check
     existing reservations against
 
-### ⏳ Phase 3 — Availability Search (not started)
-- `GET` endpoint to search halls by date, time range and required capacity
-- Requires cross-referencing existing bookings (Phase 2) to exclude halls that are already
-  booked for the requested slot
+### ✅ Phase 3 — Availability Search (done)
+- `GET /api/Halls/search` — `SearchAvailableHallsQuery`/`SearchAvailableHallsQueryHandler`
+  (`Handlers/SearchAvailableHallsQueryHandler.cs`), returns halls matching a date, time range
+  and required capacity:
+  - Filters out soft-deleted halls and any hall whose `Capacity` is below the requested value
+  - Cross-references `Bookings` (Phase 2) with a `NOT EXISTS`-style subquery, excluding halls that
+    have a non-removed booking overlapping `[startDate, endDate)` — the same overlap predicate
+    (`b.StartDate < endDate && b.EndDate > startDate`) already used by
+    `CreateBookingCommandHandler`, so a search and an actual booking attempt agree on what counts
+    as "available"; back-to-back slots (one ending exactly when the requested range starts, or
+    vice versa) are **not** treated as a conflict
+  - `startDate`/`endDate` are query-string parameters in `dd-MM-yyyy HH:mm` format, parsed with
+    the same `DdMmYyyyDateTimeConverter.Format` constant used for booking bodies (now `public` so
+    it can be shared) — since ASP.NET Core's default query-string binder doesn't go through
+    `JsonConverter`, the query is bound as raw strings and parsed manually
+  - Validates `endDate > startDate` and `capacity > 0`, returning `400` with a descriptive message
+    otherwise (same `ArgumentException` → `BadRequest` pattern as `BookingsController`)
+  - Verified manually end-to-end: capacity filtering (`>=` boundary included, one above excluded),
+    touching-but-not-overlapping ranges included, an exact-match range excluded, invalid date
+    format / inverted range / non-positive capacity all return `400`, soft-deleted halls never
+    appear, and a soft-deleted (`Removed = true`) booking no longer blocks its hall
 
 ### ⏳ Phase 4 — Reports & Analytics (not started, optional)
 Business-facing reports were requested but not yet designed/implemented. Candidates:
@@ -145,13 +162,12 @@ Business-facing reports were requested but not yet designed/implemented. Candida
 |--------|---------------------|-----------------------------------------------|
 | GET    | `/api/Halls`         | List all active halls with their services     |
 | GET    | `/api/Halls/{id}`    | Get a hall by id                               |
+| GET    | `/api/Halls/search`  | Search halls by date, time range and capacity, excluding already-booked halls |
 | POST   | `/api/Halls`         | Create a new hall                              |
 | PUT    | `/api/Halls/{id}`    | Update a hall and its services                 |
 | DELETE | `/api/Halls/{id}`    | Soft-delete a hall and its services            |
 | GET    | `/api/Bookings`       | List all bookings with their booked services   |
 | POST   | `/api/Bookings`       | Create a booking for a hall (+ optional services) |
-
-Availability-search endpoint (search halls by date/time/capacity) is planned (see Phase 3).
 
 ## Request/Response Payloads
 
@@ -347,6 +363,46 @@ This section explains, endpoint by endpoint, exactly what to send and what you g
 | `404`  | The hall doesn't exist                                                                     |
 | `409`  | The requested time slot overlaps with an existing booking for the same hall                |
 
+### 8. `GET /api/Halls/search` — search available halls
+
+**What it does:** returns active halls that fit the requested capacity **and** have no booking
+overlapping the requested date/time range. Use this before `POST /api/Bookings` to only offer
+clients halls that are actually bookable.
+
+**Send:** query-string parameters, no body, e.g.
+`GET /api/Halls/search?startDate=20-09-2026 10:00&endDate=20-09-2026 14:00&capacity=50`
+
+| Parameter   | Required | What it means                                                        |
+|-------------|----------|------------------------------------------------------------------------|
+| `startDate` | ✅ yes    | Start of the requested slot, format `dd-MM-yyyy HH:mm`                 |
+| `endDate`   | ✅ yes    | End of the requested slot, format `dd-MM-yyyy HH:mm`. Must be after `startDate` |
+| `capacity`  | ✅ yes    | Minimum number of people the hall must fit. Must be greater than zero  |
+
+**You get back:** the same array shape as endpoint 1 (`GET /api/Halls`), containing only halls
+that match the capacity and are free for the whole `[startDate, endDate)` window. A hall with a
+booking that ends exactly at `startDate`, or starts exactly at `endDate`, is still considered free.
+
+```json
+[
+  {
+    "id": "c1d1a2b3-0000-0000-0000-000000000001",
+    "name": "Hall A",
+    "capacity": 50,
+    "price": 100.0,
+    "removed": false,
+    "services": [
+      { "id": "5e10a1b2-0000-0000-0000-000000000001", "name": "Projector", "price": 20.0, "removed": false }
+    ]
+  }
+]
+```
+
+**What can go wrong:**
+
+| Status | Why                                                                                     |
+|--------|-------------------------------------------------------------------------------------------|
+| `400`  | `startDate`/`endDate` isn't in `dd-MM-yyyy HH:mm` format, `endDate` isn't after `startDate`, or `capacity` isn't a positive number |
+
 ## Getting Started
 
 **Prerequisites:** .NET 10 SDK
@@ -378,3 +434,6 @@ In the Development environment, the raw OpenAPI document is available at `/opena
   instance but not across multiple instances behind a load balancer.
 - Booking dates are parsed strictly as `dd-MM-yyyy HH:mm`; the default ASP.NET Core model binder
   will reject any other format (including ISO 8601) with a `400`.
+- There's no endpoint to cancel/soft-delete a booking yet, so `GET /api/Halls/search`'s handling
+  of a soft-deleted booking (it should stop excluding the hall) was verified by flipping the
+  `Removed` flag directly in the SQLite database, not through the API.

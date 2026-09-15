@@ -1,7 +1,6 @@
 using MediatR;
 using Microsoft.EntityFrameworkCore;
 using SpaceCore.Data;
-using SpaceCore.DTOs;
 using SpaceCore.DTOs.Hall;
 
 namespace SpaceCore.Handlers;
@@ -30,21 +29,6 @@ public class GetHallByIdQueryHandler : IRequestHandler<GetHallByIdQuery, GetHall
             return null;
         }
 
-        return new GetHallDTO
-        {
-            Id = hall.Id,
-            Name = hall.Name,
-            Capacity = hall.Capacity,
-            Price = hall.PricePerHour,
-            Removed = hall.Removed,
-            Services = hall.Services
-                .Where(s => !s.Removed) // Фільтруємо послуги, залишаючи лише активні
-                .Select(s => new GetServiceDTO
-                {
-                    Id = s.Id,
-                    Name = s.Name,
-                    Price = s.Price
-                }).ToList()
-        };
+        return GetHallDTO.FromEntity(hall);
     }
 }
