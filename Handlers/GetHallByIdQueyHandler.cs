@@ -19,6 +19,8 @@ public class GetHallByIdQueryHandler : IRequestHandler<GetHallByIdQuery, GetHall
 
     public async Task<GetHallDTO?> Handle(GetHallByIdQuery request, CancellationToken cancellationToken)
     {
+        
+        
         var hall = await _context.Halls
             .Include(h => h.Services)
             .FirstOrDefaultAsync(h => h.Id == request.Id && h.Removed == false, cancellationToken);
