@@ -58,7 +58,7 @@ Progress against the technical assignment, split into delivery phases.
 - `DELETE /api/Halls/{id}` — soft-delete a hall and its services
 - Soft-delete implemented for both halls and services
 
-### 🟡 Phase 2 — Booking & Pricing Engine (partially done)
+### ✅ Phase 2 — Booking & Pricing Engine (done)
 - ✅ `CalculatePriceService` implementing time-of-day pricing rules:
   - Rules (time range + multiplier) are loaded from `appsettings.json` (`PricingRules`), not
     hardcoded — currently configured for the assignment's bands (06:00–09:00 ×0.90,
@@ -78,11 +78,28 @@ Progress against the technical assignment, split into delivery phases.
     during development — it is not part of the intended public API and should be removed (or
     folded into the real booking flow) once Phase 2 is complete. It assumes both start and end
     fall on the same calendar day, so it can't represent overnight bookings.
-- ⏳ `Booking` entity and CQRS command to book a hall (hall id, date/time, duration, selected
-  services) — not started
-- ⏳ Booking confirmation response including the calculated total cost — not started
-- Prerequisite for Phase 3, since availability search needs the `Booking` entity to check
-  existing reservations against
+- ✅ `Booking` entity and `CreateBookingCommand` CQRS command/handler to book a hall (hall id,
+  start date/time, duration, selected services), with:
+  - `POST /api/Bookings` — creates the booking and returns a confirmation with the calculated
+    total cost
+  - `GET /api/Bookings` — lists all bookings together with the services booked on each one
+  - Overlap prevention: a new booking is rejected (`409 Conflict`) if it overlaps an existing,
+    non-removed booking for the same hall; back-to-back bookings (one ending exactly when the
+    next starts) are allowed
+  - A per-hall in-process lock (`SemaphoreSlim` keyed by `HallId`) serializes the
+    check-then-insert sequence so concurrent requests for the same hall/slot can't both pass the
+    overlap check and double-book it (verified with 10 concurrent requests for the same slot: 1
+    succeeds, 9 get `409`). This only protects a single running instance — horizontally scaling
+    to multiple instances would need a DB-level constraint or distributed lock instead.
+  - Requested services are validated against the services actually offered by the target hall
+    (`400` if a service doesn't belong to that hall), and each booked service is snapshotted into
+    a `ServiceFreezeEntity` (`OriginalId`, `Name`, `Price`, `FreezeDate`) so a later price change
+    on the live service doesn't retroactively affect past bookings
+  - `Duration` must be positive and `StartDate` cannot be in the past (`400` otherwise)
+  - Dates are accepted and returned in `dd-MM-yyyy HH:mm` format (custom
+    `JsonConverter<DateTime>` in `Common/DdMmYyyyDateTimeConverter.cs`), not the default ISO 8601
+  - Prerequisite for Phase 3, since availability search needs the `Booking` entity to check
+    existing reservations against
 
 ### ⏳ Phase 3 — Availability Search (not started)
 - `GET` endpoint to search halls by date, time range and required capacity
@@ -131,8 +148,204 @@ Business-facing reports were requested but not yet designed/implemented. Candida
 | POST   | `/api/Halls`         | Create a new hall                              |
 | PUT    | `/api/Halls/{id}`    | Update a hall and its services                 |
 | DELETE | `/api/Halls/{id}`    | Soft-delete a hall and its services            |
+| GET    | `/api/Bookings`       | List all bookings with their booked services   |
+| POST   | `/api/Bookings`       | Create a booking for a hall (+ optional services) |
 
-Booking and availability-search endpoints are planned (see Phase 2 and Phase 3).
+Availability-search endpoint (search halls by date/time/capacity) is planned (see Phase 3).
+
+## Request/Response Payloads
+
+This section explains, endpoint by endpoint, exactly what to send and what you get back.
+
+> **⚠️ Date format:** every date (`startDate` / `endDate`) is written and read as
+> `dd-MM-yyyy HH:mm` — for example `20-09-2026 14:00`.
+> This is **not** the standard ISO 8601 format, and sending ISO 8601 will fail with `400 Bad Request`.
+
+---
+
+### 1. `GET /api/Halls` — list all halls
+
+**What it does:** returns every active hall together with its active services. Use this to show clients what's available.
+
+**Send:** nothing (no body, no parameters).
+
+**You get back:**
+```json
+[
+  {
+    "id": "c1d1a2b3-0000-0000-0000-000000000001",
+    "name": "Hall A",
+    "capacity": 50,
+    "price": 100.0,
+    "removed": false,
+    "services": [
+      { "id": "5e10a1b2-0000-0000-0000-000000000001", "name": "Projector", "price": 20.0, "removed": false }
+    ]
+  }
+]
+```
+
+---
+
+### 2. `GET /api/Halls/{id}` — get one hall
+
+**What it does:** returns the details of a single hall.
+
+**Send:** the hall's `id` as part of the URL, e.g. `GET /api/Halls/c1d1a2b3-0000-0000-0000-000000000001`.
+
+**You get back:** the same object shape as one item from endpoint 1.
+
+**If the hall doesn't exist:** `404 Not Found`.
+
+---
+
+### 3. `POST /api/Halls` — create a hall
+
+**What it does:** registers a new hall, optionally with the list of services it offers right away.
+
+**Send this JSON body:**
+```json
+{
+  "name": "Hall A",
+  "capacity": 50,
+  "price": 100.0,
+  "services": [
+    { "name": "Projector", "price": 20.0 },
+    { "name": "Wi-Fi", "price": 5.0 }
+  ]
+}
+```
+
+| Field                | Required | What it means                          |
+|----------------------|----------|------------------------------------------|
+| `name`               | ✅ yes    | Hall name shown to clients                |
+| `capacity`           | ✅ yes    | Max number of people the hall fits        |
+| `price`              | ✅ yes    | Base rental price per hour                |
+| `services`           | optional | List of extra services this hall offers   |
+| `services[].name`    | ✅ yes*   | Service name (e.g. "Projector")           |
+| `services[].price`   | ✅ yes*   | Price of that service                     |
+
+\* only required for each service you include in the list.
+
+**You get back:** `200 OK` with the newly created hall (including its generated `id`).
+
+---
+
+### 4. `PUT /api/Halls/{id}` — update a hall
+
+**What it does:** updates a hall's details and re-syncs its list of services in one call.
+
+**Send:** the hall's `id` in the URL, plus this JSON body:
+```json
+{
+  "name": "Hall A",
+  "capacity": 60,
+  "price": 120.0,
+  "services": [
+    { "id": "5e10a1b2-0000-0000-0000-000000000001", "name": "Projector", "price": 25.0 },
+    { "id": null, "name": "Sound System", "price": 30.0 }
+  ]
+}
+```
+
+| Field               | Required | What it means                                                                 |
+|---------------------|----------|----------------------------------------------------------------------------------|
+| `name`              | ✅ yes    | New hall name                                                                    |
+| `capacity`          | ✅ yes    | New capacity                                                                     |
+| `price`             | ✅ yes    | New base hourly price                                                           |
+| `services`          | optional | The **full, final** list of services this hall should have                      |
+| `services[].id`     | optional | Set to an existing service's `id` to update it, or `null` to create a new one    |
+| `services[].name`   | ✅ yes*   | Service name                                                                     |
+| `services[].price`  | ✅ yes*   | Service price                                                                    |
+
+\* only required for each service you include in the list.
+
+> 💡 **How service syncing works:** whatever you put in `services` becomes the hall's new service list.
+> Any service the hall had *before* that is missing from this array gets removed (soft-deleted).
+
+**You get back:** `200 OK` on success, or `404 Not Found` if the hall doesn't exist.
+
+---
+
+### 5. `DELETE /api/Halls/{id}` — remove a hall
+
+**What it does:** soft-deletes the hall and all of its services (they're hidden, not physically erased, so past bookings stay intact).
+
+**Send:** just the hall's `id` in the URL. No body.
+
+**You get back:** `200 OK` on success, `404 Not Found` if the hall doesn't exist.
+
+---
+
+### 6. `GET /api/Bookings` — list all bookings
+
+**What it does:** returns every booking made so far, with its services and total price.
+
+**Send:** nothing (no body, no parameters).
+
+**You get back:**
+```json
+[
+  {
+    "id": "b0000000-0000-0000-0000-000000000001",
+    "hallId": "c1d1a2b3-0000-0000-0000-000000000001",
+    "hallName": "Hall A",
+    "startDate": "20-09-2026 10:00",
+    "endDate": "20-09-2026 12:00",
+    "totalPrice": 240.0,
+    "services": [
+      { "name": "Projector", "price": 20.0 }
+    ]
+  }
+]
+```
+
+---
+
+### 7. `POST /api/Bookings` — create a booking
+
+**What it does:** books a hall for a specific date/time and duration, with an optional list of services. The price is calculated automatically from the hall's base price and the time-of-day pricing rules.
+
+**Send this JSON body:**
+```json
+{
+  "hallId": "c1d1a2b3-0000-0000-0000-000000000001",
+  "startDate": "20-09-2026 10:00",
+  "duration": "02:00:00",
+  "serviceIds": [
+    "5e10a1b2-0000-0000-0000-000000000001"
+  ]
+}
+```
+
+| Field        | Required | What it means                                                                 |
+|--------------|----------|-----------------------------------------------------------------------------------|
+| `hallId`     | ✅ yes    | `id` of the hall you want to book                                                 |
+| `startDate`  | ✅ yes    | Booking start, format `dd-MM-yyyy HH:mm`. Cannot be a date/time in the past        |
+| `duration`   | ✅ yes    | How long the booking lasts, format `HH:mm:ss` (e.g. `"02:00:00"` = 2 hours). Must be greater than zero |
+| `serviceIds` | optional | `id`s of the services to add — each one must belong to the chosen hall            |
+
+**You get back** (`200 OK`) a confirmation with the calculated price:
+```json
+{
+  "bookingId": "b0000000-0000-0000-0000-000000000001",
+  "hallName": "Hall A",
+  "startDate": "20-09-2026 10:00",
+  "endDate": "20-09-2026 12:00",
+  "totalPrice": 240.0,
+  "services": [
+    { "name": "Projector", "price": 20.0 }
+  ]
+}
+```
+
+**What can go wrong:**
+
+| Status | Why                                                                                     |
+|--------|-------------------------------------------------------------------------------------------|
+| `400`  | Bad input — duration isn't positive, start date is in the past, or a service doesn't belong to this hall |
+| `404`  | The hall doesn't exist                                                                     |
+| `409`  | The requested time slot overlaps with an existing booking for the same hall                |
 
 ## Getting Started
 
@@ -157,6 +370,11 @@ In the Development environment, the raw OpenAPI document is available at `/opena
 - Seed data for the initial halls/services from the assignment (Hall A/B/C, Projector/Wi-Fi/Sound)
   is not pre-populated in the database — halls must be created via the API.
 - `SpaceCore.http` still contains the default project template request and has not been
-  updated to reflect the real `Halls` endpoints.
+  updated to reflect the real `Halls`/`Bookings` endpoints.
 - `GET /api/Test/price` is a throwaway manual-testing endpoint for the pricing service, not a
   finished part of the API surface, and can't represent overnight bookings (see Phase 2 above).
+- The double-booking guard (`Handlers/CreateBookingHandlerCommand.cs`) uses an in-process
+  per-hall lock, not a database-level constraint — it prevents races within a single running
+  instance but not across multiple instances behind a load balancer.
+- Booking dates are parsed strictly as `dd-MM-yyyy HH:mm`; the default ASP.NET Core model binder
+  will reject any other format (including ISO 8601) with a `400`.

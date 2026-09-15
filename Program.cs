@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using SpaceCore.Data;
+using SpaceCore.Services;
 using SpaceCore.Services.Domain;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -11,6 +12,7 @@ builder.Services.AddOpenApi();
 builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(Program).Assembly));
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection")));
+builder.Services.AddScoped<IHallService, HallService>();
 // Реєстрація правил ціноутворення та самого сервісу
 builder.Services.AddTransient<ICalculatePriceService>(provider =>
 {
