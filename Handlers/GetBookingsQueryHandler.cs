@@ -23,8 +23,8 @@ public class GetBookingsQueryHandler : IRequestHandler<GetBookingsQuery, IEnumer
             .Include(b => b.Services)
             .ToListAsync(cancellationToken);
 
-        // Назви залів підтягуємо окремо, включно з уже видаленими —
-        // щоб історичні бронювання не втрачали назву зали.
+        // Fetch hall names separately, including already removed halls,
+        // so historical bookings don't lose the hall name.
         var hallNames = await _context.Halls
             .Select(h => new { h.Id, h.Name })
             .ToDictionaryAsync(h => h.Id, h => h.Name, cancellationToken);

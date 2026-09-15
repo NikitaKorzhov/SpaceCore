@@ -13,15 +13,26 @@ builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(Progr
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection")));
 builder.Services.AddScoped<IHallService, HallService>();
-// Реєстрація правил ціноутворення та самого сервісу
+// Register pricing rules and the pricing service itself.
+// Registered as Transient (not Singleton) so the "PricingRules" config section is re-read from
+// appsettings on every resolution — picking up config reloads without restarting the app.
 builder.Services.AddTransient<ICalculatePriceService>(provider =>
 {
     var configuration = provider.GetRequiredService<IConfiguration>();
-    
-    // Тепер конфігурація без проблем заповнить список об'єктів
+
+    // Now the configuration will populate the list of objects without issues
     var rawRules = configuration.GetSection("PricingRules").Get<List<PricingRuleConfig>>() ?? new();
 
     return new CalculatePriceService(rawRules);
+});
+// Same rationale as ICalculatePriceService above: Transient so "HallPriceRules" is re-read from
+// appsettings on every resolution rather than baked in once at startup.
+builder.Services.AddTransient<IHallValidationService>(provider =>
+{
+    var configuration = provider.GetRequiredService<IConfiguration>();
+    var rules = configuration.GetSection("HallPriceRules").Get<HallPriceRulesConfig>() ?? new HallPriceRulesConfig();
+
+    return new HallValidationService(rules);
 });
 var app = builder.Build();
 

@@ -4,7 +4,7 @@ using SpaceCore.Common;
 
 namespace SpaceCore.DTOs;
 
-// Вхідна команда від контролера
+// Incoming command from the controller
 public record CreateBookingCommand(
     Guid HallId,
     [property: JsonConverter(typeof(DdMmYyyyDateTimeConverter))] DateTime StartDate,
@@ -12,7 +12,7 @@ public record CreateBookingCommand(
     List<Guid> ServiceIds
 ) : IRequest<BookingConfirmationDTO>;
 
-// Вихідний DTO з підтвердженням
+// Outgoing DTO with the confirmation
 public class BookingConfirmationDTO
 {
     public Guid BookingId { get; set; }
@@ -31,7 +31,7 @@ public class BookedServiceDTO
     public decimal Price { get; set; }
 }
 
-// Елемент списку всіх бронювань разом із заброньованими послугами
+// Item in the list of all bookings, along with the booked services
 public class GetBookingDTO
 {
     public Guid Id { get; set; }

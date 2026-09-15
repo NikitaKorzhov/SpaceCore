@@ -17,7 +17,7 @@ public class BookingsController : ControllerBase
     }
 
     /// <summary>
-    /// Отримати список усіх бронювань разом із заброньованими послугами
+    /// Get the list of all bookings, along with the booked services
     /// </summary>
     [HttpGet]
     public async Task<ActionResult<IEnumerable<GetBookingDTO>>> GetAll(CancellationToken cancellationToken)
@@ -27,7 +27,7 @@ public class BookingsController : ControllerBase
     }
 
     /// <summary>
-    /// Створити нове бронювання залу
+    /// Create a new hall booking
     /// </summary>
     [HttpPost]
     public async Task<ActionResult<BookingConfirmationDTO>> CreateBooking(
@@ -36,10 +36,10 @@ public class BookingsController : ControllerBase
     {
         try
         {
-            // Відправляємо команду через MediatR до нашого хендлера
+            // Send the command through MediatR to our handler
             var result = await _mediator.Send(command, cancellationToken);
 
-            // Повертаємо результат із кодом 200 OK (або можна 201 Created за потреби)
+            // Return the result with 200 OK (201 Created could be used if needed)
             return Ok(result);
         }
         catch (KeyNotFoundException ex)

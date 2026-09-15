@@ -22,7 +22,7 @@ public class GetHallDTO
             Price = hall.PricePerHour,
             Removed = hall.Removed,
             Services = hall.Services
-                .Where(s => !s.Removed) // Фільтруємо видалені послуги
+                .Where(s => !s.Removed) // Filter out removed services
                 .Select(s => new GetServiceDTO
                 {
                     Id = s.Id,
