@@ -6,7 +6,7 @@ namespace SpaceCore.Common;
 
 public class DdMmYyyyDateTimeConverter : JsonConverter<DateTime>
 {
-    private const string Format = "dd-MM-yyyy HH:mm";
+    public const string Format = "dd-MM-yyyy HH:mm";
 
     public override DateTime Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
     {

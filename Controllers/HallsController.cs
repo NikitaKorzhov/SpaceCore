@@ -30,6 +30,22 @@ public class HallsController : ControllerBase
         if (result == null) return NotFound();
         return Ok(result);
     }
+    // Пошук вільних залів за датою, часовим проміжком та потрібною місткістю
+    [HttpGet("search")]
+    public async Task<ActionResult<IEnumerable<GetHallDTO>>> SearchAvailable(
+        [FromQuery] SearchAvailableHallsQuery query,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await _mediator.Send(query, cancellationToken);
+            return Ok(result);
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
+    }
     // Додати новий зал
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] CreateHallDTO dto)
