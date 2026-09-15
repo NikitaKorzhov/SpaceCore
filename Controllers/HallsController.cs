@@ -53,22 +53,36 @@ public class HallsController : ControllerBase
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] CreateHallDTO dto)
     {
-        var createdHall = await _mediator.Send(new CreateHallCommand(dto));
-        return Ok(new { Message = "Created!", Hall = createdHall });
+        try
+        {
+            var createdHall = await _mediator.Send(new CreateHallCommand(dto));
+            return Ok(new { Message = "Created!", Hall = createdHall });
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
     }
     // Update Hall by id
     [HttpPut("{id:guid}")]
     public async Task<IActionResult> UpdateHall(Guid id, [FromBody] UpdateHallDTO dto, CancellationToken cancellationToken)
     {
-        var command = new UpdateHallCommand(id, dto);
-        var success = await _mediator.Send(command, cancellationToken);
-
-        if (!success)
+        try
         {
-            return NotFound(new { message = "Hall not found or already removed." });
-        }
+            var command = new UpdateHallCommand(id, dto);
+            var success = await _mediator.Send(command, cancellationToken);
 
-        return Ok(new { message = "Hall successfully updated." });
+            if (!success)
+            {
+                return NotFound(new { message = "Hall not found or already removed." });
+            }
+
+            return Ok(new { message = "Hall successfully updated." });
+        }
+        catch (ArgumentException ex)
+        {
+            return BadRequest(new { message = ex.Message });
+        }
     }
     // Delete a hall by ID
     [HttpDelete("{id}")]

@@ -25,6 +25,15 @@ builder.Services.AddTransient<ICalculatePriceService>(provider =>
 
     return new CalculatePriceService(rawRules);
 });
+// Same rationale as ICalculatePriceService above: Transient so "HallPriceRules" is re-read from
+// appsettings on every resolution rather than baked in once at startup.
+builder.Services.AddTransient<IHallValidationService>(provider =>
+{
+    var configuration = provider.GetRequiredService<IConfiguration>();
+    var rules = configuration.GetSection("HallPriceRules").Get<HallPriceRulesConfig>() ?? new HallPriceRulesConfig();
+
+    return new HallValidationService(rules);
+});
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.

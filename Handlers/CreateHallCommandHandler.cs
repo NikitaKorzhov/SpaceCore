@@ -4,6 +4,7 @@ using SpaceCore.Data;
 using SpaceCore.DTOs;
 using SpaceCore.DTOs.Hall;
 using SpaceCore.Models;
+using SpaceCore.Services.Domain;
 
 namespace SpaceCore.Handlers;
 
@@ -12,16 +13,20 @@ public record CreateHallCommand(CreateHallDTO Dto) : IRequest<GetHallDTO>;
 public class CreateHallCommandHandler : IRequestHandler<CreateHallCommand, GetHallDTO>
 {
     private readonly AppDbContext _context;
+    private readonly IHallValidationService _hallValidationService;
 
-    public CreateHallCommandHandler(AppDbContext context)
+    public CreateHallCommandHandler(AppDbContext context, IHallValidationService hallValidationService)
     {
         _context = context;
+        _hallValidationService = hallValidationService;
     }
 
     public async Task<GetHallDTO> Handle(CreateHallCommand request, CancellationToken cancellationToken)
     {
         var dto = request.Dto;
-        
+
+        _hallValidationService.ValidatePrice(dto.Price);
+
         // Guard against null if the services array was not provided
         var servicesDto = dto.Services ?? new List<CreateServiceDTO>();
 

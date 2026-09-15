@@ -5,6 +5,7 @@ using SpaceCore.DTOs;
 using SpaceCore.DTOs.Hall;
 
 using SpaceCore.Models;
+using SpaceCore.Services.Domain;
 
 namespace SpaceCore.Handlers;
 
@@ -13,16 +14,20 @@ public record UpdateHallCommand(Guid Id, UpdateHallDTO Dto) : IRequest<bool>;
 public class UpdateHallCommandHandler : IRequestHandler<UpdateHallCommand, bool>
 {
     private readonly AppDbContext _context;
+    private readonly IHallValidationService _hallValidationService;
 
-    public UpdateHallCommandHandler(AppDbContext context)
+    public UpdateHallCommandHandler(AppDbContext context, IHallValidationService hallValidationService)
     {
         _context = context;
+        _hallValidationService = hallValidationService;
     }
-    
+
     public async Task<bool> Handle(UpdateHallCommand request, CancellationToken cancellationToken)
     {
         var hallId = request.Id;
         var dto = request.Dto;
+
+        _hallValidationService.ValidatePrice(dto.Price);
 
         // 1. Fetch the hall along with its currently active services (avoid N+1 via .Include)
         var hall = await _context.Halls
@@ -34,11 +39,6 @@ public class UpdateHallCommandHandler : IRequestHandler<UpdateHallCommand, bool>
             return false; // Hall not found or removed
         }
 
-        // 2. Update the hall's base data (e.g., changing the price to 2500 UAH)
-        hall.Name = dto.Name;
-        hall.Capacity = dto.Capacity;
-        hall.PricePerHour = dto.Price;
-
         var incomingServices = dto.Services ?? new List<UpdateServiceDTO>();
 
         // Collect the IDs of services that came in the new request (only those that have an Id)
@@ -46,6 +46,23 @@ public class UpdateHallCommandHandler : IRequestHandler<UpdateHallCommand, bool>
             .Where(s => s.Id.HasValue)
             .Select(s => s.Id.Value)
             .ToHashSet();
+
+        // Every referenced Id must belong to this hall, otherwise it would silently vanish
+        // instead of being applied (mirrors the service-ownership check in CreateBookingCommandHandler).
+        var hallServiceIds = hall.Services.Select(s => s.Id).ToHashSet();
+        var unknownServiceIds = incomingIds.Where(id => !hallServiceIds.Contains(id)).ToList();
+
+        if (unknownServiceIds.Any())
+        {
+            throw new ArgumentException(
+                $"The following services do not belong to hall {hallId}: {string.Join(", ", unknownServiceIds)}",
+                nameof(dto.Services));
+        }
+
+        // 2. Update the hall's base data (e.g., changing the price to 2500 UAH)
+        hall.Name = dto.Name;
+        hall.Capacity = dto.Capacity;
+        hall.PricePerHour = dto.Price;
 
         // 3. Soft-delete services that are not present in the incoming array
         foreach (var service in hall.Services)

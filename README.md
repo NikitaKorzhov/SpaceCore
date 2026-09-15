@@ -40,6 +40,20 @@ Each use case (create hall, update hall, delete hall, etc.) is implemented as a 
 isolation. Halls and Services are soft-deleted (`Removed` flag) rather than physically
 deleted, preserving historical data for future reporting and bookings.
 
+## Configuration
+
+Two business rules are read from `appsettings.json` at request time (via a `Transient`-registered
+service, not baked in once at startup), so they can be tuned without a code change or app restart:
+
+| Section          | Shape                                                                 | Used by                                                    |
+|-------------------|-----------------------------------------------------------------------|--------------------------------------------------------------|
+| `PricingRules`    | `[ { "Range": "HH:mm-HH:mm", "Multiplier": 0.9 }, ... ]`               | `ICalculatePriceService` — time-of-day rate multipliers for booking prices (see Phase 2) |
+| `HallPriceRules`  | `{ "MinPrice": 0, "MaxPrice": 79228162514264337593543950335 }`         | `IHallValidationService` — accepted range for a hall's `Price` on create/update (see Phase 1) |
+
+`HallPriceRules.MaxPrice` defaults to `decimal.MaxValue` (the literal shown above), i.e. no
+practical upper bound — only the `MinPrice: 0` floor (rejecting negative prices) is actually
+enforced out of the box. Lower it in `appsettings.json` if a real business ceiling is needed.
+
 ## Implementation Phases
 
 Progress against the technical assignment, split into delivery phases.
@@ -57,6 +71,23 @@ Progress against the technical assignment, split into delivery phases.
 - `PUT /api/Halls/{id}` — update hall details, add/update/remove services
 - `DELETE /api/Halls/{id}` — soft-delete a hall and its services
 - Soft-delete implemented for both halls and services
+- `Name` is required and `Capacity` must be a positive integer, both enforced via `[Range]`/
+  required-property validation on `CreateHallDTO`/`UpdateHallDTO` — a violation returns `400`
+  automatically via ASP.NET Core's built-in model validation, before the handler even runs
+- `Price` must fall within `[MinPrice, MaxPrice]`, checked by `IHallValidationService`
+  (`Services/Domain/HallValidationService.cs`) rather than a `[Range]` attribute, because the
+  bounds are read from the `HallPriceRules` section of `appsettings.json` instead of being
+  hardcoded — see the "Configuration" section below. Registered `Transient` in `Program.cs` (same
+  rationale as `ICalculatePriceService`), so a config change is picked up on the next request
+  without restarting the app (verified: lowering `MinPrice` to `10` live-rejected a `price: 5`
+  hall immediately). Violations throw `ArgumentException`, caught by `HallsController` and
+  returned as `400`
+- `PUT /api/Halls/{id}` validates that every `services[].id` in the request actually belongs to
+  the target hall; an unknown or foreign id throws `ArgumentException` (`400`) instead of being
+  silently dropped — previously, sending an id that didn't match any of the hall's own services
+  returned `200` while quietly wiping the hall's entire service list (existing services not
+  resent are soft-deleted regardless, since the new list is authoritative — but only once the
+  request as a whole has been accepted)
 
 ### ✅ Phase 2 — Booking & Pricing Engine (done)
 - ✅ `CalculatePriceService` implementing time-of-day pricing rules:
@@ -134,10 +165,29 @@ Business-facing reports were requested but not yet designed/implemented. Candida
 - Interactive Swagger UI page is not yet wired up
 - Endpoint summaries, examples and response types are not yet documented via XML comments/attributes
 
-### ⏳ Phase 6 — Validation, Error Handling & Logging (not started)
-- No request validation on DTOs (e.g. required fields, positive prices/capacity)
-- No global exception-handling middleware / consistent error response shape
-- No structured application logging
+### 🟡 Phase 6 — Validation, Error Handling & Logging (partially done)
+- ✅ Hall `Name` (required) and `Capacity` (positive) are validated declaratively via
+  DataAnnotations on `CreateHallDTO`/`UpdateHallDTO`; `Price` bounds are config-driven via
+  `IHallValidationService` (see Phase 1 and "Configuration" below); `PUT /api/Halls/{id}` rejects
+  service ids that don't belong to the hall instead of silently dropping them
+- ✅ Booking input (`Duration > 0`, `StartDate` not in the past, `ServiceIds` belong to the hall)
+  and search input (`EndDate > StartDate`, `Capacity > 0`, date format) were already validated
+  from Phase 2/3
+- ⚠️ **Inconsistent error response shape:** declarative DataAnnotations failures (missing `Name`,
+  non-positive `Capacity`) are caught by ASP.NET Core's automatic model validation and returned as
+  the framework's `ValidationProblemDetails` shape (`{ "errors": { "Capacity": [...] } }`), while
+  everything validated manually in a handler (`Price` bounds, service ownership, booking rules,
+  search rules) throws `ArgumentException` and is returned as `{ "message": "..." }` by the
+  controller's `catch` block. A client has to handle two different error shapes depending on
+  which rule was violated.
+- ⏳ No global exception-handling middleware — every controller action that can fail needs its own
+  `try`/`catch`, and an unhandled exception falls through to the framework's default (a stack
+  trace in Development, a bare `500` otherwise)
+- ⏳ No structured application logging
+- ⏳ Booking `Duration` still has no upper bound (a booking can be created for years), and
+  `DELETE /api/Halls/{id}` returns `200` even when called again on an already-removed hall
+  (inconsistent with `PUT`, which correctly returns `404 "not found or already removed"` for the
+  same state) — both found during manual endpoint testing, not yet fixed
 
 ### ⏳ Phase 7 — Security Hardening (not started)
 - No authentication/authorization on any endpoint
@@ -251,8 +301,8 @@ This section explains, endpoint by endpoint, exactly what to send and what you g
 | Field                | Required | What it means                          |
 |----------------------|----------|------------------------------------------|
 | `name`               | ✅ yes    | Hall name shown to clients                |
-| `capacity`           | ✅ yes    | Max number of people the hall fits        |
-| `price`              | ✅ yes    | Base rental price per hour                |
+| `capacity`           | ✅ yes    | Max number of people the hall fits. Must be a positive integer |
+| `price`              | ✅ yes    | Base rental price per hour. Must be within the configured `HallPriceRules` range (`0` and up, by default) |
 | `services`           | optional | List of extra services this hall offers   |
 | `services[].name`    | ✅ yes*   | Service name (e.g. "Projector")           |
 | `services[].price`   | ✅ yes*   | Price of that service                     |
@@ -260,6 +310,12 @@ This section explains, endpoint by endpoint, exactly what to send and what you g
 \* only required for each service you include in the list.
 
 **You get back:** `200 OK` with the newly created hall (including its generated `id`).
+
+**What can go wrong:**
+
+| Status | Why                                                                                     |
+|--------|-------------------------------------------------------------------------------------------|
+| `400`  | `name` is missing, `capacity` isn't a positive integer (framework validation error shape — see Phase 6), or `price` is outside the configured range (`{"message": "..."}` shape) |
 
 ---
 
@@ -283,10 +339,10 @@ This section explains, endpoint by endpoint, exactly what to send and what you g
 | Field               | Required | What it means                                                                 |
 |---------------------|----------|----------------------------------------------------------------------------------|
 | `name`              | ✅ yes    | New hall name                                                                    |
-| `capacity`          | ✅ yes    | New capacity                                                                     |
-| `price`             | ✅ yes    | New base hourly price                                                           |
+| `capacity`          | ✅ yes    | New capacity. Must be a positive integer                                        |
+| `price`             | ✅ yes    | New base hourly price. Must be within the configured `HallPriceRules` range      |
 | `services`          | optional | The **full, final** list of services this hall should have                      |
-| `services[].id`     | optional | Set to an existing service's `id` to update it, or `null` to create a new one    |
+| `services[].id`     | optional | Set to an existing service's `id` **belonging to this hall** to update it, or `null` to create a new one |
 | `services[].name`   | ✅ yes*   | Service name                                                                     |
 | `services[].price`  | ✅ yes*   | Service price                                                                    |
 
@@ -294,8 +350,17 @@ This section explains, endpoint by endpoint, exactly what to send and what you g
 
 > 💡 **How service syncing works:** whatever you put in `services` becomes the hall's new service list.
 > Any service the hall had *before* that is missing from this array gets removed (soft-deleted).
+> Every `services[].id` you send must already belong to this hall — an unknown or foreign id
+> rejects the whole request with `400` rather than being silently ignored.
 
 **You get back:** `200 OK` on success, or `404 Not Found` if the hall doesn't exist.
+
+**What can go wrong:**
+
+| Status | Why                                                                                     |
+|--------|-------------------------------------------------------------------------------------------|
+| `400`  | `name` is missing, `capacity` isn't a positive integer, `price` is outside the configured range, or a `services[].id` doesn't belong to this hall |
+| `404`  | The hall doesn't exist, or is already soft-deleted (`Removed = true`)                     |
 
 ---
 
@@ -306,6 +371,10 @@ This section explains, endpoint by endpoint, exactly what to send and what you g
 **Send:** just the hall's `id` in the URL. No body.
 
 **You get back:** `200 OK` on success, `404 Not Found` if the hall doesn't exist.
+
+> ⚠️ **Known issue:** deleting a hall that's *already* soft-deleted also returns `200 OK` again
+> instead of `404` — the handler doesn't check `Removed` before re-applying the soft-delete. This
+> is inconsistent with `PUT /api/Halls/{id}`, which correctly returns `404` for the same state.
 
 ---
 
@@ -379,6 +448,12 @@ This section explains, endpoint by endpoint, exactly what to send and what you g
 | `404`  | The hall doesn't exist                                                                     |
 | `409`  | The requested time slot overlaps with an existing booking for the same hall                |
 
+> ⚠️ **Known issue:** `duration` has no upper bound — a multi-year booking is accepted as-is,
+> tying up the hall for the entire period. There's also no dedicated check for a missing `hallId`:
+> since it's a `Guid` (a value type), omitting it from the request body silently binds to
+> `Guid.Empty` rather than failing model validation, so the response is `404 "Hall with ID
+> 00000000-0000-0000-0000-000000000000 was not found"` instead of a clearer "hallId is required".
+
 ### 8. `GET /api/Halls/search` — search available halls
 
 **What it does:** returns active halls that fit the requested capacity **and** have no booking
@@ -451,3 +526,14 @@ In the Development environment, the raw OpenAPI document is available at `/opena
 - There's no endpoint to cancel/soft-delete a booking yet, so `GET /api/Halls/search`'s handling
   of a soft-deleted booking (it should stop excluding the hall) was verified by flipping the
   `Removed` flag directly in the SQLite database, not through the API.
+- `DELETE /api/Halls/{id}` returns `200 OK` even when the hall is already soft-deleted, instead of
+  `404` — inconsistent with `PUT /api/Halls/{id}`'s handling of the same state (see endpoint 5
+  above).
+- Booking `duration` has no upper bound — a booking spanning years is accepted without complaint
+  (see endpoint 7 above).
+- Error responses have two different shapes depending on which rule was violated: automatic
+  DataAnnotations failures return the framework's `ValidationProblemDetails` shape, while
+  everything validated manually in a handler (`Price` bounds, service ownership, booking/search
+  rules) returns a bare `{ "message": "..." }` from the controller's `catch` block. See Phase 6.
+- A missing `hallId` in a booking request silently binds to `Guid.Empty` (since `Guid` is a value
+  type) and surfaces as a `404 "Hall not found"` rather than a clear "field is required" `400`.
