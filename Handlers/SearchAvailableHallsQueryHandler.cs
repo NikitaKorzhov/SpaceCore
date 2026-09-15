@@ -7,8 +7,8 @@ using SpaceCore.DTOs.Hall;
 
 namespace SpaceCore.Handlers;
 
-// StartDate/EndDate приходять рядком у форматі "dd-MM-yyyy HH:mm" (query string не проходить
-// через JsonConverter, тому парсимо вручну тим самим форматом, що й тіло запиту бронювання).
+// StartDate/EndDate arrive as a string in "dd-MM-yyyy HH:mm" format (the query string doesn't go
+// through the JsonConverter, so we parse it manually using the same format as the booking request body).
 public record SearchAvailableHallsQuery(string StartDate, string EndDate, int Capacity)
     : IRequest<IEnumerable<GetHallDTO>>;
 
@@ -36,8 +36,8 @@ public class SearchAvailableHallsQueryHandler : IRequestHandler<SearchAvailableH
             throw new ArgumentException("Capacity must be a positive number.", nameof(request.Capacity));
         }
 
-        // Зали, що підходять за місткістю і не мають бронювань, які перетинаються з запитаним
-        // проміжком (той самий предикат перетину, що й у CreateBookingCommandHandler).
+        // Halls that fit the required capacity and have no bookings overlapping the requested
+        // time range (the same overlap predicate as in CreateBookingCommandHandler).
         var halls = await _context.Halls
             .Where(h => !h.Removed
                 && h.Capacity >= request.Capacity

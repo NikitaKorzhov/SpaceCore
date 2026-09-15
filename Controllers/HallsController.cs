@@ -15,7 +15,7 @@ public class HallsController : ControllerBase
     {
         _mediator = mediator;
     }
-    // Отримати всі зали
+    // Get all halls
     [HttpGet]
     public async Task<ActionResult<IEnumerable<GetHallDTO>>> GetAll()
     {
@@ -30,7 +30,10 @@ public class HallsController : ControllerBase
         if (result == null) return NotFound();
         return Ok(result);
     }
-    // Пошук вільних залів за датою, часовим проміжком та потрібною місткістю
+    // Search for available halls by date, time range, and required capacity.
+    // SearchAvailableHallsQuery is bound directly from the query string (?StartDate=...&EndDate=...&Capacity=...)
+    // because ASP.NET Core can bind [FromQuery] to a positional record's constructor parameters by name —
+    // no separate query-DTO is needed, the MediatR request doubles as the model-binding target.
     [HttpGet("search")]
     public async Task<ActionResult<IEnumerable<GetHallDTO>>> SearchAvailable(
         [FromQuery] SearchAvailableHallsQuery query,
@@ -46,12 +49,12 @@ public class HallsController : ControllerBase
             return BadRequest(new { message = ex.Message });
         }
     }
-    // Додати новий зал
+    // Add a new hall
     [HttpPost]
     public async Task<IActionResult> Create([FromBody] CreateHallDTO dto)
     {
         var createdHall = await _mediator.Send(new CreateHallCommand(dto));
-        return Ok(new { Message = "Створено!", Hall = createdHall });
+        return Ok(new { Message = "Created!", Hall = createdHall });
     }
     // Update Hall by id
     [HttpPut("{id:guid}")]
@@ -62,17 +65,17 @@ public class HallsController : ControllerBase
 
         if (!success)
         {
-            return NotFound(new { message = "Зал не знайдено або він вже видалений." });
+            return NotFound(new { message = "Hall not found or already removed." });
         }
 
-        return Ok(new { message = "Зал успішно оновлено." });
+        return Ok(new { message = "Hall successfully updated." });
     }
-    // Видалити зал за ID
+    // Delete a hall by ID
     [HttpDelete("{id}")]
     public async Task<IActionResult> Delete(Guid id)
     {
         var deleted = await _mediator.Send(new DeleteHallCommand(id));
-        if (!deleted) return NotFound("Зал не знайдено");
-        return Ok("Зал та пов'язані послуги успішно видалено!");
+        if (!deleted) return NotFound("Hall not found");
+        return Ok("Hall and its related services successfully deleted!");
     }
 }

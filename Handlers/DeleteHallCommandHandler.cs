@@ -23,6 +23,9 @@ public class DeleteHallCommandHandler : IRequestHandler<DeleteHallCommand, bool>
 
         if (hall == null) return false;
 
+        // Soft delete: rows are flagged instead of removed from the database, because existing
+        // bookings reference this hall/its services and must keep displaying their historical data
+        // (see GetBookingsQueryHandler, which looks up hall names including removed halls).
         hall.Removed = true;
 
         foreach (var service in hall.Services)

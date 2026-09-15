@@ -74,10 +74,9 @@ Progress against the technical assignment, split into delivery phases.
     never match, since the comparison assumes `StartTime < EndTime`. Not an issue with the
     current `PricingRules` config, but would need explicit handling if such a rule is added.
   - A temporary `GET /api/Test/price?time=10:00-14:00&price=100` endpoint
-    (`Controllers/TestController.cs`) was added to manually exercise the service end-to-end
-    during development — it is not part of the intended public API and should be removed (or
-    folded into the real booking flow) once Phase 2 is complete. It assumes both start and end
-    fall on the same calendar day, so it can't represent overnight bookings.
+    (`Controllers/TestController.cs`) was used during development to manually exercise the
+    service end-to-end; it has since been removed now that the pricing service is exercised
+    through the real booking flow (Phase 2 completed, see Code Style Review below).
 - ✅ `Booking` entity and `CreateBookingCommand` CQRS command/handler to book a hall (hall id,
   start date/time, duration, selected services), with:
   - `POST /api/Bookings` — creates the booking and returns a confirmation with the calculated
@@ -150,11 +149,28 @@ Business-facing reports were requested but not yet designed/implemented. Candida
 - No automated tests yet (unit tests for the pricing engine and handlers, integration tests
   for controllers)
 
-### 🟡 Phase 9 — Documentation & Repository Setup (in progress)
+### ✅ Phase 9 — Documentation & Repository Setup (done)
 - This README
 - Handlers already contain inline comments explaining non-obvious logic (soft-delete
   cascades, service reconciliation on update) — partially covers the "code comments" bonus item
-- Git repository not yet initialized in the project folder
+- Git repository initialized in the project folder, with history tracking each delivery phase
+
+### ✅ Code Style Review (done)
+A pass over the existing codebase to clean up comments and remove dev-only leftovers, ahead of
+further feature work:
+- All in-code comments and controller-facing message strings translated from Ukrainian to English
+  for a consistent codebase language
+- Expanded inline comments on non-obvious logic that previously had none or only a short note,
+  including: why the query-string date parsing in `SearchAvailableHallsQueryHandler` bypasses
+  `DdMmYyyyDateTimeConverter`, the interval-overlap predicate shared between booking creation and
+  availability search, the segment-by-segment walk in `CalculatePriceService.Calculate`, the
+  per-hall `SemaphoreSlim` lock's single-instance-only guarantee, why halls/services are soft- not
+  hard-deleted, why `ServiceEntity.Hall` is a many-to-many navigation despite each service
+  belonging to one hall in practice, and why the pricing service is registered `Transient` instead
+  of `Singleton`
+- Removed `Controllers/TestController.cs`, the temporary `GET /api/Test/price` endpoint used to
+  manually exercise `CalculatePriceService` during Phase 2 development (see Phase 2 above) — no
+  longer needed now that pricing is exercised through the real booking flow
 
 ## API Endpoints (current)
 
@@ -427,8 +443,6 @@ In the Development environment, the raw OpenAPI document is available at `/opena
   is not pre-populated in the database — halls must be created via the API.
 - `SpaceCore.http` still contains the default project template request and has not been
   updated to reflect the real `Halls`/`Bookings` endpoints.
-- `GET /api/Test/price` is a throwaway manual-testing endpoint for the pricing service, not a
-  finished part of the API surface, and can't represent overnight bookings (see Phase 2 above).
 - The double-booking guard (`Handlers/CreateBookingHandlerCommand.cs`) uses an in-process
   per-hall lock, not a database-level constraint — it prevents races within a single running
   instance but not across multiple instances behind a load balancer.

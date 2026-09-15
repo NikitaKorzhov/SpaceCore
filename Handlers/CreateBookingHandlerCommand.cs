@@ -9,8 +9,11 @@ using SpaceCore.Services.Domain;
 
 public class CreateBookingCommandHandler : IRequestHandler<CreateBookingCommand, BookingConfirmationDTO>
 {
-    // Серіалізує перевірку перетину та вставку бронювання по одному зала в межах процесу,
-    // щоб два одночасні запити на той самий зал не проскочили обидва повз AnyAsync-перевірку.
+    // Serializes the overlap check and booking insertion per hall within the process,
+    // so that two concurrent requests for the same hall don't both slip past the AnyAsync check.
+    // This is an in-memory, single-process lock only: it does NOT protect against race conditions
+    // if the app is scaled out to multiple instances (a distributed lock or a DB-level unique/exclusion
+    // constraint would be needed for that).
     private static readonly ConcurrentDictionary<Guid, SemaphoreSlim> HallLocks = new();
 
     private readonly AppDbContext _context;
@@ -26,7 +29,7 @@ public class CreateBookingCommandHandler : IRequestHandler<CreateBookingCommand,
 
     public async Task<BookingConfirmationDTO> Handle(CreateBookingCommand request, CancellationToken cancellationToken)
     {
-        // 1. Перевіряємо та отримуємо зал
+        // 1. Validate and fetch the hall
         var hall = await _hallService.GetByID(request.HallId, cancellationToken);
 
         if (hall == null)
@@ -34,26 +37,29 @@ public class CreateBookingCommandHandler : IRequestHandler<CreateBookingCommand,
             throw new KeyNotFoundException($"Hall with ID {request.HallId} was not found.");
         }
 
-        // Тривалість бронювання має бути додатною
+        // Booking duration must be positive
         if (request.Duration <= TimeSpan.Zero)
         {
             throw new ArgumentException("Duration must be a positive time span.", nameof(request.Duration));
         }
 
-        // Бронювання заднім числом не має сенсу
+        // Backdated bookings don't make sense
         if (request.StartDate < DateTime.Now)
         {
             throw new ArgumentException("StartDate cannot be in the past.", nameof(request.StartDate));
         }
 
-        // Обчислюємо час закінчення бронювання
+        // Calculate the booking end time
         var endDate = request.StartDate.Add(request.Duration);
 
         var hallLock = HallLocks.GetOrAdd(request.HallId, _ => new SemaphoreSlim(1, 1));
         await hallLock.WaitAsync(cancellationToken);
         try
         {
-            // Перевіряємо, що зал вільний на цей проміжок часу
+            // Check that the hall is free for this time range.
+            // Classic interval-overlap test: two ranges [A.Start, A.End) and [B.Start, B.End) overlap
+            // whenever A.Start < B.End AND A.End > B.Start (equivalent to NOT(A ends before B starts
+            // OR A starts after B ends)). The same predicate is reused in SearchAvailableHallsQueryHandler.
             var hasOverlap = await _context.Bookings.AnyAsync(
                 b => b.OriginalHallId == request.HallId
                      && !b.Removed
@@ -77,16 +83,19 @@ public class CreateBookingCommandHandler : IRequestHandler<CreateBookingCommand,
     private async Task<BookingConfirmationDTO> CreateBookingAsync(
         CreateBookingCommand request, SpaceCore.DTOs.Hall.GetHallDTO hall, DateTime endDate, CancellationToken cancellationToken)
     {
-        // 2. Рахуємо ціну оренди залу через ваш сервіс з урахуванням коефіцієнтів
+        // 2. Calculate the hall rental price through the pricing service, accounting for multipliers
         decimal hallPrice = _priceService.Calculate(request.StartDate, endDate, hall.Price);
 
-        // 3. Обробляємо додаткові послуги та створюємо їхні історичні зліпки (ServiceFreeze)
+        // 3. Process additional services and create their historical snapshots (ServiceFreeze).
+        // We copy the Name/Price into a separate ServiceFreezeEntity rather than just referencing
+        // the ServiceEntity by ID, because the hall's services (name/price) can change or be removed
+        // later — the booking must keep showing what the customer actually agreed to pay at booking time.
         var serviceFreezes = new List<ServiceFreezeEntity>();
         decimal servicesTotalCost = 0m;
 
         if (request.ServiceIds != null && request.ServiceIds.Any())
         {
-            // Послуги мають належати саме до цього залу
+            // Services must belong specifically to this hall
             var hallServiceIds = hall.Services.Select(s => s.Id).ToHashSet();
             var unknownServiceIds = request.ServiceIds.Where(id => !hallServiceIds.Contains(id)).ToList();
 
@@ -114,17 +123,17 @@ public class CreateBookingCommandHandler : IRequestHandler<CreateBookingCommand,
             }
         }
 
-        // Загальна сума (оренда залу з урахуванням коефіцієнтів + послуги)
+        // Total amount (hall rental accounting for multipliers + services)
         decimal finalTotalPrice = hallPrice + servicesTotalCost;
 
-        // 4. Створюємо сутність бронювання
+        // 4. Create the booking entity
         var booking = new BookingEntity
         {
             Id = Guid.NewGuid(),
             OriginalHallId = hall.Id,
             StartDate = request.StartDate,
             EndDate = endDate,
-            PricePerHour = hall.Price, // Зберігаємо ставку на момент броні
+            PricePerHour = hall.Price, // Store the rate at the time of booking
             TotalPrice = finalTotalPrice,
             Services = serviceFreezes
         };
@@ -132,7 +141,7 @@ public class CreateBookingCommandHandler : IRequestHandler<CreateBookingCommand,
         _context.Bookings.Add(booking);
         await _context.SaveChangesAsync(cancellationToken);
 
-        // 5. Формуємо вихідне підтвердження для клієнта
+        // 5. Build the outgoing confirmation for the client
         return new BookingConfirmationDTO
         {
             BookingId = booking.Id,
